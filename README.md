@@ -14,13 +14,6 @@ Archisight is a full-stack web app for finding or manually tracing a building on
 - Export generated models as `.glb` files.
 - Use Google Solar data when available for footprint and roof-area context.
 
-## Tech Stack
-
-- Frontend: React, Vite, Google Maps JavaScript API, Three.js, React Three Fiber, Drei, Axios.
-- Backend: Node.js, Express, MongoDB, Mongoose, Axios.
-- Data sources: Google Places, Google Maps, Google Solar API, OpenStreetMap/Nominatim, MongoDB seed data.
-- Deployment target: Cloudflare Pages for frontend, Render for backend, MongoDB Atlas for database.
-
 ## Repository Structure
 
 ```txt
