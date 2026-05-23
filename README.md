@@ -11,7 +11,6 @@ Archisight is a full-stack web app for finding or manually tracing a building on
 - Generate a 3D model from OSM geometry, manual tracing, or approximation fallback.
 - Estimate building height, levels, roof height, and roof profile.
 - Choose roof styles such as flat, gabled, hipped, pyramidal, shed, dome, and cone.
-- Export generated models as `.glb` files.
 - Use Google Solar data when available for footprint and roof-area context.
 
 ## Repository Structure
