@@ -1,110 +1,141 @@
 # Project Notes For Codex
 
-## Purpose
+These notes are for future Codex sessions and maintainers. They are intentionally more implementation-focused than the public README.
 
-This repository contains a small full-stack app for exploring buildings in Nuremberg and generating AI-created architectural visualizations from map-selected locations.
+For user-facing setup and deployment instructions, start with [README.md](./README.md). For the technical architecture guide, see [3D_BUILDING_VISUALIZATION_GUIDE.md](./3D_BUILDING_VISUALIZATION_GUIDE.md).
 
-The current product experience is:
+## Current Product
 
-1. Load seeded buildings from MongoDB.
-2. Show them on a Google satellite map.
-3. Let the user search additional buildings with Google Places Autocomplete.
-4. Fetch Google Solar building footprint stats for the selected location when possible.
-5. Send building context to Anthropic on the backend to generate a 2D SVG site/roof outline.
-6. Render the generated SVG in the frontend.
+Archisight is a full-stack building visualization prototype. The main user flow is now 3D model generation, not the earlier SVG-only concept.
 
-Despite the project name, the main active flow right now is 2D plan generation, not a polished 3D viewer flow.
+The app can:
+
+1. Show a Google satellite map.
+2. Load seeded buildings from MongoDB.
+3. Search buildings through Google Places Autocomplete.
+4. Allow manual building tracing without searching first.
+5. Clear or undo trace points.
+6. Select roof type before model generation.
+7. Generate 3D building massing from manual footprints, OSM geometry, building-part data, or approximation fallback.
+8. Render the result with React Three Fiber and Three.js.
+9. Override roof type in the viewer.
+10. Export the displayed model as `.glb`.
 
 ## Actual Structure
 
-Top-level:
+Top level:
 
-- `3D_BUILDING_VISUALIZATION_GUIDE.md`: conceptual implementation guide, not a strict description of the current codebase.
+- `README.md`: public project overview, setup, deployment, and GitHub-facing description.
+- `3D_BUILDING_VISUALIZATION_GUIDE.md`: technical architecture and modeling guide.
+- `PROJECT_NOTES_FOR_CODEX.md`: this internal implementation note.
+- `.gitignore`: ignores real `.env` files, build outputs, logs, and dependencies.
 - `building-3d-viewer/frontend`: React + Vite client.
 - `building-3d-viewer/backend`: Express + MongoDB API.
 
-Frontend key files:
-
-- `building-3d-viewer/frontend/src/App.jsx`: main app state and orchestration.
-- `building-3d-viewer/frontend/src/components/MapComponent.jsx`: Google map with markers.
-- `building-3d-viewer/frontend/src/components/BuildingInfo.jsx`: side panel with Street View and building stats.
-- `building-3d-viewer/frontend/src/components/PlanViewer.jsx`: generates and renders SVG plans.
-- `building-3d-viewer/frontend/src/components/Viewer3D.jsx`: older/unused Three.js model viewer.
-- `building-3d-viewer/frontend/vite.config.js`: proxies `/api` to backend.
-
-Backend key files:
-
-- `building-3d-viewer/backend/server.js`: Express app bootstrapping and Mongo connection.
-- `building-3d-viewer/backend/routes/buildings.js`: seeded building APIs, solar stats API, Anthropic generation endpoints.
-- `building-3d-viewer/backend/models/Building.js`: Mongoose schema.
-- `building-3d-viewer/backend/seed.js`: inserts seeded Nuremberg building data.
-
-## Runtime Model
-
 Frontend:
 
-- Uses `@react-google-maps/api` for the map, autocomplete, and Street View.
-- Uses `axios` for all API requests.
-- Loads Google Maps via `VITE_GOOGLE_MAPS_API_KEY`.
-- Fetches `/api/buildings` on mount.
-- When a building is selected, fetches `/api/buildings/solar-stats?lat=...&lng=...`.
-- When the user clicks "Draft Footprint Outline", `PlanViewer` calls:
-  - `/api/buildings/:id/generate-plan` for seeded Mongo buildings
-  - `/api/buildings/direct/generate-plan` for Google Places results
+- `src/App.jsx`: main state orchestration, selected building, tracing state, back/forward navigation, roof choice handoff, and map/model transitions.
+- `src/lib/api.js`: shared Axios client. Uses `VITE_API_BASE_URL` in production.
+- `src/components/MapComponent.jsx`: Google map, markers, custom trace points, polygon overlay, rectangle assist, and center tracking.
+- `src/components/BuildingInfo.jsx`: right-side building panel, manual tracing controls, clear-all behavior, roof selector, stats, and build button.
+- `src/components/PlanViewer.jsx`: backend model request, procedural Three.js geometry, roof override dropdown, scene rendering, and GLB export.
+- `vite.config.js`: local `/api` proxy to backend.
 
 Backend:
 
-- Uses Express 5, Mongoose, Axios, and Anthropic SDK.
-- Connects to MongoDB with `MONGODB_URI`, defaulting to `mongodb://localhost:27017/buildings_3d`.
-- Uses `GOOGLE_MAPS_API_KEY` server-side for the Solar API.
-- Uses `ANTHROPIC_API_KEY` and optional `ANTHROPIC_MODEL` for SVG/HTML generation.
+- `server.js`: Express app, CORS with `CLIENT_ORIGIN`, JSON parsing, MongoDB connection, and route registration.
+- `routes/buildings.js`: building list APIs, solar stats API, OSM/Nominatim lookup, manual footprint handling, model generation, roof inference, archetypal landmark parts, and legacy AI generation helpers.
+- `models/Building.js`: Mongoose schema.
+- `seed.js`: inserts seeded Nuremberg landmark data.
 
-AI generation:
+## Runtime Details
 
-- `make2DPrompt()` builds a detailed SVG drafting prompt and includes solar-derived dimensions when available.
-- `make3DPrompt()` builds an A-Frame HTML prompt for massing-style 3D output.
-- The frontend currently auto-generates only the 2D plan flow.
+Frontend environment:
 
-## Important Observations
+- `VITE_GOOGLE_MAPS_API_KEY`: browser key for Google Maps JavaScript API.
+- `VITE_API_BASE_URL`: backend origin in production, for example Render.
 
-1. The top-level guide is broader and older than the implementation.
-   It mentions Leaflet, generic 3D architecture, and an idealized structure that does not exactly match this repo.
+Backend environment:
 
-2. There is a port mismatch right now.
-   `frontend/vite.config.js` proxies `/api` to `http://localhost:3001`, but `backend/server.js` defaults to port `5000`.
+- `MONGODB_URI`: MongoDB Atlas or local MongoDB connection string.
+- `GOOGLE_MAPS_API_KEY`: server key for Google Solar API.
+- `ANTHROPIC_API_KEY`: used by legacy AI plan-generation routes.
+- `ANTHROPIC_MODEL`: optional Claude model override.
+- `CLIENT_ORIGIN`: allowed frontend origin for CORS.
+- `PORT`: Render supplies this automatically, local fallback is `5000`.
 
-3. `Viewer3D.jsx` appears to be legacy or unused.
-   The current app routes into `PlanViewer` and does not expose a real 3D mode in the UI.
+## Current Modeling Logic
 
-4. Some dependencies are likely leftovers.
-   The frontend still includes `react-leaflet`, `leaflet`, `@react-three/fiber`, `@react-three/drei`, and `three`, but the primary user path uses Google Maps and SVG generation.
+The backend resolves building geometry in this order:
 
-5. `backend/package.json` is minimal.
-   There is no `start`, `dev`, or seed script yet, which will make local startup less convenient.
+1. `manualFootprint` from the frontend when at least three points exist.
+2. OSM/Nominatim building polygon lookup.
+3. OSM building-part data when available.
+4. Landmark archetype splitting for churches, castles, and stations when parts are missing.
+5. Approximation fallback when no external polygon matches.
 
-6. The app is Nuremberg-specific by default.
-   Seed data, default coordinates, and UX copy assume Nuremberg, Germany.
+Roof inference uses:
 
-## Current User Flow In Code
+- Explicit `roofShape` from the frontend.
+- OSM `roof:shape`, `roof:height`, `roof:levels`, `roof:orientation`, and `roof:direction`.
+- Building type heuristics.
+- Footprint ratio heuristics.
 
-1. `App.jsx` loads Google Maps JS and seeded buildings.
-2. The left sidebar lists seeded buildings and exposes Google Places search.
-3. `MapComponent.jsx` shows markers and pans/zooms to the selected building.
-4. `BuildingInfo.jsx` shows Street View, building metadata, and solar footprint stats.
-5. `PlanViewer.jsx` immediately requests an SVG plan and injects it into the page with `dangerouslySetInnerHTML`.
+The frontend can override roof shape after generation with local geometry regeneration in `PlanViewer.jsx`.
 
-## Risks / Likely Next Fixes
+## Important Implementation Notes
 
-- Fix the frontend/backend port mismatch.
-- Add backend npm scripts for running and seeding.
-- Decide whether to keep or remove the dormant 3D viewer path.
-- Decide whether the product should stay Nuremberg-focused or become location-agnostic.
-- Validate generated SVG/HTML output handling if this is exposed beyond trusted internal/demo use.
+- Manual tracing is now a first-class flow. It creates a synthetic custom building with `_id` like `manual-trace-*`.
+- `Clear All` uses `manualTraceVersion` to force stale Google Maps overlays to remount.
+- `selectedForViewer` uses the centroid of manual footprint points so generated models are centered near the traced polygon.
+- The backend accepts roof hints through `building.roofShape`.
+- `.env` files should never be committed. `.env.example` files should stay committed.
+- The frontend Google key is not secret once shipped to a browser, but it must be restricted by HTTP referrer.
+- The Anthropic key and MongoDB URI must stay backend-only.
 
-## Fast Start Mental Model
+## Verification Commands
 
-Think of this project as:
+Frontend build:
 
-"A React map UI for selecting real buildings, enriched with Google Solar footprint data, then sent to Anthropic to draft a visually styled architectural SVG outline."
+```bash
+cd building-3d-viewer/frontend
+npm run build
+```
 
-That is the clearest summary of the code as it exists today.
+Backend syntax checks:
+
+```bash
+cd building-3d-viewer/backend
+node --check server.js
+node --check routes/buildings.js
+```
+
+## Deployment Notes
+
+Cloudflare Pages:
+
+- Root directory: `building-3d-viewer/frontend`
+- Build command: `npm run build`
+- Output directory: `dist`
+- Environment: `VITE_GOOGLE_MAPS_API_KEY`, `VITE_API_BASE_URL`
+
+Render:
+
+- Root directory: `building-3d-viewer/backend`
+- Build command: `npm install`
+- Start command: `npm start`
+- Environment: `MONGODB_URI`, `GOOGLE_MAPS_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `CLIENT_ORIGIN`
+
+MongoDB:
+
+- Use MongoDB Atlas for production.
+- Render free tier usually needs Atlas Network Access to allow `0.0.0.0/0` unless using a plan with stable outbound IP.
+
+## Likely Next Work
+
+1. Add editable floors, wall height, and roof height controls.
+2. Add draggable trace-point editing.
+3. Improve procedural roof meshes for dome/cone/pyramidal roofs.
+4. Add model screenshots or PNG export.
+5. Add clearer health endpoint for Render uptime checks.
+6. Add API tests around manual footprint and roof-shape model generation.
