@@ -189,6 +189,34 @@ function createBuildingArtifacts(model) {
   };
 }
 
+function createViewerSettings(artifacts) {
+  const bounds = artifacts?.bounds;
+  if (!bounds) {
+    return {
+      cameraPosition: [36, 28, 36],
+      gridSize: 160,
+      fogFar: 180,
+      maxDistance: 180,
+    };
+  }
+
+  const width = bounds.maxX - bounds.minX;
+  const depth = bounds.maxZ - bounds.minZ;
+  const footprintSpan = Math.max(width, depth, 40);
+  const cameraDistance = Math.max(54, footprintSpan * 1.45);
+
+  return {
+    cameraPosition: [
+      Number((cameraDistance * 0.72).toFixed(1)),
+      Number((cameraDistance * 0.56).toFixed(1)),
+      Number((cameraDistance * 0.72).toFixed(1)),
+    ],
+    gridSize: Math.max(160, Math.ceil((footprintSpan * 2.6) / 20) * 20),
+    fogFar: Math.max(180, footprintSpan * 4),
+    maxDistance: Math.max(240, footprintSpan * 5),
+  };
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
@@ -282,6 +310,7 @@ const Viewer = ({ building, onBack }) => {
 
   const displayModel = useMemo(() => applyRoofOverride(model, roofChoice), [model, roofChoice]);
   const artifacts = useMemo(() => (displayModel ? createBuildingArtifacts(displayModel) : null), [displayModel]);
+  const viewerSettings = useMemo(() => createViewerSettings(artifacts), [artifacts]);
 
   const handleExportGlb = async () => {
     if (!artifacts || !displayModel) return;
@@ -366,7 +395,9 @@ const Viewer = ({ building, onBack }) => {
           <button className="secondary-btn export-btn" onClick={handleExportGlb} disabled={state !== 'done' || exporting}>
             {exporting ? 'Exporting…' : 'Export GLB'}
           </button>
-          <span className="model-badge">{model?.source?.provider || 'OSM + Height Estimate'}</span>
+          <span className="model-badge">
+            {model?.source?.detection ? 'Satellite-detected footprint' : (model?.source?.provider || 'OSM + Height Estimate')}
+          </span>
         </div>
       </div>
 
@@ -394,9 +425,9 @@ const Viewer = ({ building, onBack }) => {
 
         {state === 'done' && displayModel && artifacts && (
           <div className="model-stage">
-            <Canvas shadows camera={{ position: [36, 28, 36], fov: 42 }}>
+            <Canvas shadows camera={{ position: viewerSettings.cameraPosition, fov: 42 }}>
               <color attach="background" args={['#050913']} />
-              <fog attach="fog" args={['#050913', 55, 150]} />
+              <fog attach="fog" args={['#050913', 55, viewerSettings.fogFar]} />
               <ambientLight intensity={0.55} color="#cbd5e1" />
               <directionalLight
                 position={[18, 28, 14]}
@@ -411,12 +442,12 @@ const Viewer = ({ building, onBack }) => {
               <group>
                 <BuildingMesh artifacts={artifacts} model={displayModel} />
                 <Grid
-                  args={[160, 160]}
+                  args={[viewerSettings.gridSize, viewerSettings.gridSize]}
                   cellColor="#12304a"
                   sectionColor="#1d4f73"
                   position={[0, -0.01, 0]}
                   infiniteGrid
-                  fadeDistance={160}
+                  fadeDistance={viewerSettings.gridSize}
                   fadeStrength={1.2}
                 />
               </group>
@@ -426,7 +457,7 @@ const Viewer = ({ building, onBack }) => {
                 enablePan
                 enableDamping
                 minDistance={12}
-                maxDistance={120}
+                maxDistance={viewerSettings.maxDistance}
                 maxPolarAngle={Math.PI / 2.05}
               />
             </Canvas>
@@ -460,6 +491,11 @@ const Viewer = ({ building, onBack }) => {
               <p>
                 Type {displayModel.building.type} · Street View refinement {displayModel.source?.refinementHints?.streetViewCandidate ? 'available' : 'unavailable'}
               </p>
+              {displayModel.source?.detection && (
+                <p>
+                  Satellite contour confidence {displayModel.source.detection.confidence} · Circularity {displayModel.source.detection.circularity}
+                </p>
+              )}
             </div>
           </div>
         )}

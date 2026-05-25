@@ -3,6 +3,7 @@ const router = express.Router();
 const Building = require('../models/Building');
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const { PNG } = require('pngjs');
 const EARTH_RADIUS_METERS = 6378137;
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -173,6 +174,83 @@ function localMetersToLatLng(x, y, originLat, originLng) {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function polygonPerimeter(points) {
+  if (!Array.isArray(points) || points.length < 2) return 0;
+
+  let perimeter = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const current = points[i];
+    const next = points[(i + 1) % points.length];
+    perimeter += Math.hypot(next.x - current.x, next.y - current.y);
+  }
+
+  return perimeter;
+}
+
+function computePolygonMetrics(projected) {
+  if (!Array.isArray(projected) || projected.length < 3) {
+    return {
+      area: 0,
+      perimeter: 0,
+      circularity: 0,
+      width: 0,
+      height: 0,
+      vertexCount: 0,
+    };
+  }
+
+  const xs = projected.map(point => point.x);
+  const ys = projected.map(point => point.y);
+  const area = polygonArea(projected);
+  const perimeter = polygonPerimeter(projected);
+  const circularity = perimeter > 0
+    ? (4 * Math.PI * area) / (perimeter * perimeter)
+    : 0;
+
+  return {
+    area,
+    perimeter,
+    circularity,
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+    vertexCount: projected.length,
+  };
+}
+
+function latLngToWorldPixel(lat, lng, zoom) {
+  const scale = 256 * (2 ** zoom);
+  const sinLat = clamp(Math.sin(toRadians(lat)), -0.9999, 0.9999);
+
+  return {
+    x: ((lng + 180) / 360) * scale,
+    y: (0.5 - (Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI))) * scale,
+  };
+}
+
+function worldPixelToLatLng(x, y, zoom) {
+  const scale = 256 * (2 ** zoom);
+  const lng = (x / scale) * 360 - 180;
+  const n = Math.PI - ((2 * Math.PI * y) / scale);
+  const lat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+
+  return { lat, lng };
+}
+
+function pixelToLatLng(px, py, centerLat, centerLng, zoom, width, height) {
+  const centerWorld = latLngToWorldPixel(centerLat, centerLng, zoom);
+  const worldX = centerWorld.x + (px - (width / 2));
+  const worldY = centerWorld.y + (py - (height / 2));
+  return worldPixelToLatLng(worldX, worldY, zoom);
+}
+
+function approximateMetersPerPixel(lat, zoom, scale = 1) {
+  return (156543.03392 * Math.cos(toRadians(lat))) / (2 ** zoom) / scale;
+}
+
 function distanceMeters(aLat, aLng, bLat, bLng) {
   const a = projectToLocalMeters(aLat, aLng, aLat, aLng);
   const b = projectToLocalMeters(bLat, bLng, aLat, aLng);
@@ -287,6 +365,11 @@ function chooseBestFootprint(elements, lat, lng) {
     })
     .filter(Boolean)
     .sort((left, right) => {
+      const leftIsPrimary = isPrimaryBuildingCandidate(left.tags);
+      const rightIsPrimary = isPrimaryBuildingCandidate(right.tags);
+      if (leftIsPrimary !== rightIsPrimary) {
+        return leftIsPrimary ? -1 : 1;
+      }
       if (left.containsSelection !== right.containsSelection) {
         return left.containsSelection ? -1 : 1;
       }
@@ -301,6 +384,16 @@ function chooseBestFootprint(elements, lat, lng) {
 
 function isBuildingPartElement(element) {
   return Boolean(element?.tags?.['building:part']);
+}
+
+function isPrimaryBuildingCandidate(tags = {}) {
+  const buildingTag = String(tags.building || '').trim().toLowerCase();
+  const buildingPartTag = String(tags['building:part'] || '').trim().toLowerCase();
+
+  if (buildingPartTag) return false;
+  if (!buildingTag) return true;
+
+  return buildingTag !== 'no';
 }
 
 function buildElementCandidate(element, lat, lng) {
@@ -376,6 +469,11 @@ function chooseBestCandidate(candidates) {
   return candidates
     .filter(Boolean)
     .sort((left, right) => {
+      const leftIsPrimary = isPrimaryBuildingCandidate(left.tags);
+      const rightIsPrimary = isPrimaryBuildingCandidate(right.tags);
+      if (leftIsPrimary !== rightIsPrimary) {
+        return leftIsPrimary ? -1 : 1;
+      }
       if (left.containsSelection !== right.containsSelection) {
         return left.containsSelection ? -1 : 1;
       }
@@ -384,6 +482,318 @@ function chooseBestCandidate(candidates) {
       }
       return Math.abs(left.areaMeters) - Math.abs(right.areaMeters);
     })[0] || null;
+}
+
+function getStaticMapsApiKey() {
+  return (process.env.GOOGLE_MAPS_API_KEY || '').trim();
+}
+
+function getPixelColor(png, x, y) {
+  if (x < 0 || y < 0 || x >= png.width || y >= png.height) {
+    return null;
+  }
+
+  const index = ((Math.floor(y) * png.width) + Math.floor(x)) * 4;
+  return {
+    r: png.data[index],
+    g: png.data[index + 1],
+    b: png.data[index + 2],
+    a: png.data[index + 3],
+  };
+}
+
+function rgbDistance(left, right) {
+  const dr = left.r - right.r;
+  const dg = left.g - right.g;
+  const db = left.b - right.b;
+  return Math.sqrt((dr * dr) + (dg * dg) + (db * db));
+}
+
+function sampleCenterReferenceColor(png, centerX, centerY) {
+  const samples = [];
+
+  for (let dy = -3; dy <= 3; dy += 1) {
+    for (let dx = -3; dx <= 3; dx += 1) {
+      const color = getPixelColor(png, centerX + dx, centerY + dy);
+      if (color && color.a > 0) {
+        samples.push(color);
+      }
+    }
+  }
+
+  if (!samples.length) {
+    return {
+      average: { r: 128, g: 128, b: 128 },
+      spread: 24,
+    };
+  }
+
+  const average = samples.reduce((acc, sample) => ({
+    r: acc.r + sample.r,
+    g: acc.g + sample.g,
+    b: acc.b + sample.b,
+  }), { r: 0, g: 0, b: 0 });
+
+  average.r /= samples.length;
+  average.g /= samples.length;
+  average.b /= samples.length;
+
+  const spread = samples.reduce((acc, sample) => acc + rgbDistance(sample, average), 0) / samples.length;
+
+  return { average, spread };
+}
+
+function growSatelliteMask(png, centerX, centerY, options = {}) {
+  const { average, spread } = sampleCenterReferenceColor(png, centerX, centerY);
+  const width = png.width;
+  const height = png.height;
+  const totalPixels = width * height;
+  const visited = new Uint8Array(totalPixels);
+  const mask = new Uint8Array(totalPixels);
+  const queue = new Int32Array(totalPixels * 2);
+  let head = 0;
+  let tail = 0;
+
+  const threshold = clamp(36 + (spread * 2.4), 34, 96);
+  const brightnessThreshold = clamp(20 + spread, 18, 52);
+  const maxRegionPixels = options.maxRegionPixels || Math.floor(totalPixels * 0.25);
+
+  const push = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = (y * width) + x;
+    if (visited[index]) return;
+    visited[index] = 1;
+    queue[tail] = x;
+    queue[tail + 1] = y;
+    tail += 2;
+  };
+
+  for (let dy = -2; dy <= 2; dy += 1) {
+    for (let dx = -2; dx <= 2; dx += 1) {
+      push(centerX + dx, centerY + dy);
+    }
+  }
+
+  let regionPixels = 0;
+  let sumX = 0;
+  let sumY = 0;
+
+  while (head < tail && regionPixels < maxRegionPixels) {
+    const x = queue[head];
+    const y = queue[head + 1];
+    head += 2;
+
+    const color = getPixelColor(png, x, y);
+    if (!color || color.a === 0) continue;
+
+    const brightness = (color.r + color.g + color.b) / 3;
+    const averageBrightness = (average.r + average.g + average.b) / 3;
+    const distance = rgbDistance(color, average);
+
+    if (distance > threshold || Math.abs(brightness - averageBrightness) > brightnessThreshold) {
+      continue;
+    }
+
+    const index = (y * width) + x;
+    if (mask[index]) continue;
+
+    mask[index] = 1;
+    regionPixels += 1;
+    sumX += x;
+    sumY += y;
+
+    push(x + 1, y);
+    push(x - 1, y);
+    push(x, y + 1);
+    push(x, y - 1);
+    push(x + 1, y + 1);
+    push(x - 1, y - 1);
+    push(x + 1, y - 1);
+    push(x - 1, y + 1);
+  }
+
+  return {
+    mask,
+    regionPixels,
+    centroidX: regionPixels ? (sumX / regionPixels) : centerX,
+    centroidY: regionPixels ? (sumY / regionPixels) : centerY,
+    threshold,
+    spread,
+  };
+}
+
+function extractRadialBoundary(maskData, width, height, centroidX, centroidY) {
+  const boundary = [];
+  const seen = new Set();
+  const maxRadius = Math.hypot(width, height);
+
+  const maskAt = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return 0;
+    return maskData[(Math.floor(y) * width) + Math.floor(x)];
+  };
+
+  for (let step = 0; step < 48; step += 1) {
+    const angle = (step / 48) * Math.PI * 2;
+    let lastInside = null;
+
+    for (let radius = 0; radius <= maxRadius; radius += 1) {
+      const x = Math.round(centroidX + (Math.cos(angle) * radius));
+      const y = Math.round(centroidY + (Math.sin(angle) * radius));
+
+      if (!maskAt(x, y)) {
+        if (lastInside) {
+          const key = `${lastInside.x},${lastInside.y}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            boundary.push(lastInside);
+          }
+        }
+        break;
+      }
+
+      lastInside = { x, y };
+    }
+  }
+
+  return boundary;
+}
+
+function buildSatelliteCandidateFromMask(maskResult, lat, lng, zoom, width, height, building = {}) {
+  const boundaryPixels = extractRadialBoundary(
+    maskResult.mask,
+    width,
+    height,
+    maskResult.centroidX,
+    maskResult.centroidY
+  );
+
+  if (boundaryPixels.length < 8) {
+    return null;
+  }
+
+  const polygon = boundaryPixels.map(point => pixelToLatLng(point.x, point.y, lat, lng, zoom, width, height));
+  const candidate = buildCandidateFromPolygon(polygon, lat, lng, {
+    tags: {
+      building: 'satellite-detected',
+      'roof:shape': building.roofShape || null,
+    },
+    sourceProvider: 'Google Static Maps satellite detection',
+  });
+
+  if (!candidate) return null;
+
+  const metrics = computePolygonMetrics(candidate.projected);
+  const pixelAreaMeters = maskResult.regionPixels * (approximateMetersPerPixel(lat, zoom, 2) ** 2);
+  candidate.detection = {
+    confidence: Number(clamp(
+      0.35
+        + Math.min(0.35, boundaryPixels.length / 80)
+        + Math.min(0.2, maskResult.regionPixels / 18000)
+        + Math.min(0.15, metrics.circularity),
+      0,
+      0.98
+    ).toFixed(2)),
+    circularity: Number(metrics.circularity.toFixed(3)),
+    sampledPoints: boundaryPixels.length,
+    pixelAreaMeters: Number(pixelAreaMeters.toFixed(1)),
+    threshold: Number(maskResult.threshold.toFixed(1)),
+  };
+
+  return candidate;
+}
+
+async function fetchSatelliteDetectedFootprint(building, lat, lng) {
+  const apiKey = getStaticMapsApiKey();
+  if (!apiKey) {
+    throw new Error('Google Maps API key is missing on the server');
+  }
+
+  const zoom = 20;
+  const width = 1280;
+  const height = 1280;
+  const url = 'https://maps.googleapis.com/maps/api/staticmap';
+
+  const response = await axios.get(url, {
+    params: {
+      center: `${lat},${lng}`,
+      zoom,
+      size: '640x640',
+      scale: 2,
+      maptype: 'satellite',
+      format: 'png32',
+      key: apiKey,
+      style: 'feature:all|element:labels|visibility:off',
+    },
+    responseType: 'arraybuffer',
+    timeout: 20000,
+  });
+
+  const png = PNG.sync.read(Buffer.from(response.data));
+  const centerX = Math.floor(png.width / 2);
+  const centerY = Math.floor(png.height / 2);
+  const metersPerPixel = approximateMetersPerPixel(lat, zoom, 2);
+  const expectedAreaMeters = building?.solarStats?.buildingAreaMeters
+    || building?.solarStats?.buildingGroundAreaMeters
+    || null;
+  const maxRegionPixels = expectedAreaMeters
+    ? Math.max(1800, Math.round((expectedAreaMeters * 2.8) / (metersPerPixel * metersPerPixel)))
+    : Math.round((png.width * png.height) * 0.12);
+
+  const maskResult = growSatelliteMask(png, centerX, centerY, { maxRegionPixels });
+  if (maskResult.regionPixels < 300) {
+    throw new Error('Satellite detector could not isolate a strong roof region.');
+  }
+
+  const candidate = buildSatelliteCandidateFromMask(maskResult, lat, lng, zoom, width, height, building);
+  if (!candidate) {
+    throw new Error('Satellite detector could not trace a usable roof outline.');
+  }
+
+  return candidate;
+}
+
+function relativeAreaError(area, expected) {
+  if (!expected || !area) return Number.POSITIVE_INFINITY;
+  return Math.abs(area - expected) / expected;
+}
+
+function shouldPreferSatelliteCandidate(building, primaryCandidate, satelliteCandidate) {
+  if (!satelliteCandidate?.detection) return false;
+  if (!primaryCandidate) return satelliteCandidate.detection.confidence >= 0.5;
+
+  const primaryMetrics = computePolygonMetrics(primaryCandidate.projected);
+  const satelliteMetrics = computePolygonMetrics(satelliteCandidate.projected);
+  const expectedArea = building?.solarStats?.buildingAreaMeters
+    || building?.solarStats?.buildingGroundAreaMeters
+    || null;
+
+  if (expectedArea) {
+    const primaryError = relativeAreaError(primaryCandidate.areaMeters, expectedArea);
+    const satelliteError = relativeAreaError(satelliteCandidate.areaMeters, expectedArea);
+
+    if ((satelliteError + 0.12) < primaryError && satelliteCandidate.detection.confidence >= 0.55) {
+      return true;
+    }
+  }
+
+  if (
+    primaryMetrics.vertexCount <= 5
+    && satelliteMetrics.vertexCount >= 12
+    && satelliteMetrics.circularity > (primaryMetrics.circularity + 0.18)
+    && satelliteCandidate.detection.confidence >= 0.58
+  ) {
+    return true;
+  }
+
+  if (
+    satelliteMetrics.circularity >= 0.72
+    && primaryMetrics.circularity <= 0.56
+    && satelliteCandidate.detection.confidence >= 0.6
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 async function fetchOverpassFootprint(lat, lng) {
@@ -600,15 +1010,47 @@ async function fetchBuildingFootprint(building, lat, lng) {
     return manualFootprintToCandidate(building, lat, lng);
   }
 
+  let overpassCandidate = null;
   try {
-    return await fetchOverpassFootprint(lat, lng);
+    overpassCandidate = await fetchOverpassFootprint(lat, lng);
   } catch (overpassError) {
     try {
-      return await fetchNominatimFootprint(building, lat, lng);
+      const nominatimCandidate = await fetchNominatimFootprint(building, lat, lng);
+
+      try {
+        const satelliteCandidate = await fetchSatelliteDetectedFootprint(building, lat, lng);
+        if (shouldPreferSatelliteCandidate(building, nominatimCandidate, satelliteCandidate)) {
+          return satelliteCandidate;
+        }
+      } catch (satelliteError) {
+        // Ignore satellite failures and preserve the stronger map-data fallback.
+      }
+
+      return nominatimCandidate;
     } catch (nominatimError) {
       try {
-        return await fetchNominatimReverseFootprint(lat, lng);
+        const reverseCandidate = await fetchNominatimReverseFootprint(lat, lng);
+
+        try {
+          const satelliteCandidate = await fetchSatelliteDetectedFootprint(building, lat, lng);
+          if (shouldPreferSatelliteCandidate(building, reverseCandidate, satelliteCandidate)) {
+            return satelliteCandidate;
+          }
+        } catch (satelliteError) {
+          // Ignore satellite failures and preserve the stronger map-data fallback.
+        }
+
+        return reverseCandidate;
       } catch (reverseError) {
+        try {
+          const satelliteCandidate = await fetchSatelliteDetectedFootprint(building, lat, lng);
+          if (satelliteCandidate) {
+            return satelliteCandidate;
+          }
+        } catch (satelliteError) {
+          // Ignore satellite failures and continue to geometric approximation fallback.
+        }
+
         const approximate = makeApproximateFootprintCandidate(building, lat, lng);
         if (approximate) {
           return approximate;
@@ -619,6 +1061,19 @@ async function fetchBuildingFootprint(building, lat, lng) {
           : (nominatimError.message ? new Error(nominatimError.message) : overpassError);
       }
     }
+  }
+
+  if (overpassCandidate) {
+    try {
+      const satelliteCandidate = await fetchSatelliteDetectedFootprint(building, lat, lng);
+      if (shouldPreferSatelliteCandidate(building, overpassCandidate, satelliteCandidate)) {
+        return satelliteCandidate;
+      }
+    } catch (satelliteError) {
+      // Ignore satellite failures and preserve the stronger OSM footprint.
+    }
+
+    return overpassCandidate;
   }
 }
 
@@ -1086,6 +1541,7 @@ function build3DModelData(building, footprint) {
     roof: primaryPart.roof,
     source: {
       provider: footprint.sourceProvider || 'OpenStreetMap / Overpass',
+      detection: footprint.detection || null,
       refinementHints: {
         streetViewCandidate: Boolean(building.lat && building.lng),
         imageAnalysisSuggested: buildingContext.type === 'CHURCH / CATHEDRAL' || parts.length > 1,

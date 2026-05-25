@@ -1,6 +1,6 @@
 # Archisight
 
-Archisight is a full-stack web app for finding or manually tracing a building on a satellite map and generating a realistic 3D massing model from its footprint. It supports automatic building lookup, manual footprint tracing, estimated height, roof-shape selection, and GLB export.
+Archisight is a full-stack web app for finding, detecting, or manually tracing a building on a satellite map and generating a realistic 3D massing model from its footprint. It supports automatic building lookup, satellite-image footprint detection, manual footprint tracing, estimated height, roof-shape selection, and interactive camera controls.
 
 ## What It Does
 
@@ -8,10 +8,19 @@ Archisight is a full-stack web app for finding or manually tracing a building on
 - Select seeded landmark buildings from MongoDB.
 - Trace any visible building footprint directly on the satellite map.
 - Clear, undo, and redraw manual footprint points.
-- Generate a 3D model from OSM geometry, manual tracing, or approximation fallback.
+- Detect roof contours from Google Static satellite imagery when OSM footprint data is weak.
+- Generate a 3D model from OSM geometry, Nominatim polygons, satellite detection, manual tracing, or approximation fallback.
 - Estimate building height, levels, roof height, and roof profile.
 - Choose roof styles such as flat, gabled, hipped, pyramidal, shed, dome, and cone.
+- Scale the 3D viewer camera, zoom distance, fog, and grid from the model footprint so large buildings remain inspectable.
 - Use Google Solar data when available for footprint and roof-area context.
+
+## Tech Stack
+
+- Frontend: React, Vite, Google Maps JavaScript API, Three.js, React Three Fiber, Drei, Axios.
+- Backend: Node.js, Express, MongoDB, Mongoose, Axios, PNGJS.
+- Data sources: Google Places, Google Maps JavaScript API, Google Maps Static API, Google Solar API, OpenStreetMap/Overpass, Nominatim, MongoDB seed data.
+- Deployment target: Cloudflare Pages for frontend, Render for backend, MongoDB Atlas for database.
 
 ## Repository Structure
 
@@ -68,6 +77,8 @@ CLIENT_ORIGIN=http://localhost:5173
 PORT=5000
 ```
 
+The backend `GOOGLE_MAPS_API_KEY` is used for Google Solar and satellite-image footprint detection. Enable the Google Maps Static API for automatic satellite contour detection.
+
 ## Run Locally
 
 Install backend dependencies:
@@ -96,6 +107,18 @@ The backend includes seeded building data for Nuremberg landmarks.
 cd building-3d-viewer/backend
 node seed.js
 ```
+
+## Footprint Detection Flow
+
+When a building is selected, Archisight tries to derive the most useful footprint in this order:
+
+1. Use a manual traced footprint if the user created one.
+2. Query OpenStreetMap/Overpass and prefer full building outlines over smaller `building:part` polygons.
+3. Try Nominatim search or reverse geocoding polygons.
+4. Analyze Google Static satellite imagery around the selected point and extract a roof contour when it is likely better than the map-data footprint.
+5. Fall back to a generated approximation if no reliable footprint source is available.
+
+The 3D viewer uses the selected footprint to extrude the walls, estimate roof geometry, and automatically expand camera distance so larger models can be viewed without being clipped by the orbit controls.
 
 ## Production Deployment
 
@@ -141,4 +164,4 @@ CLIENT_ORIGIN=https://your-cloudflare-pages-domain.pages.dev
 
 ## Current Status
 
-Archisight is a working prototype focused on realistic building massing from map-derived or hand-traced footprints. The most important next improvements are stronger roof geometry, richer building-part reconstruction, and optional image-assisted refinement.
+Archisight is a working prototype focused on realistic building massing from map-derived, satellite-detected, or hand-traced footprints. The current version includes adaptive 3D camera controls, but unusual roof materials, shadows, and adjacent structures can still affect automatic contour quality. Future improvements should focus on stronger computer-vision segmentation, richer roof reconstruction, and clearer confidence feedback for detected footprints.
