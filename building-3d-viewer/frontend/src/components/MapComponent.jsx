@@ -20,6 +20,7 @@ export default function MapComponent({
   selectedBuilding,
   seedBuildings,
   onSelect,
+  onMapBuildingPick,
   onCenterChange,
   editMode,
   manualFootprint,
@@ -59,7 +60,10 @@ export default function MapComponent({
         onManualFootprintChange(buildRectangleFromCorners(rectangleAnchor, { lat, lng }));
         onRectangleAnchorChange(null);
       }
+      return;
     }
+
+    onMapBuildingPick?.({ lat, lng });
   };
 
   return (

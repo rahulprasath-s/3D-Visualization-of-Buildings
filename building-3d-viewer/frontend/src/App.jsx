@@ -59,6 +59,7 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [solarStats, setSolarStats] = useState(null);
   const [solarLoading, setSolarLoading] = useState(false);
+  const [mapPickLoading, setMapPickLoading] = useState(false);
   const [appState, setAppState] = useState('loading');
   const [mapCenter, setMapCenter] = useState({ lat: 49.4521, lng: 11.0767 });
   const [editMode, setEditMode] = useState(null);
@@ -234,6 +235,34 @@ export default function App() {
     });
   };
 
+  const handleMapBuildingPick = async ({ lat, lng }) => {
+    if (mapPickLoading) return;
+
+    setMapPickLoading(true);
+
+    try {
+      const response = await api.post('/api/buildings/resolve-location', { lat, lng });
+      const building = response.data?.data;
+
+      if (!building) {
+        throw new Error('No building could be resolved from that map click.');
+      }
+
+      transitionTo(() => {
+        setEditMode(null);
+        setRectangleAnchor(null);
+        setManualFootprint([]);
+        setMapCenter({ lat: building.lat, lng: building.lng });
+        setSelected(building);
+        setAppState('plan');
+      });
+    } catch (err) {
+      alert(err.response?.data?.message || err.message || 'Failed to resolve a building from that click.');
+    } finally {
+      setMapPickLoading(false);
+    }
+  };
+
   const handleMapCenterChange = (nextCenter) => {
     setMapCenter((current) => {
       const latDelta = Math.abs(current.lat - nextCenter.lat);
@@ -262,6 +291,10 @@ export default function App() {
         manualFootprint: manualFootprint.length >= 3 ? manualFootprint : undefined,
       }
     : null;
+
+  const statusText = mapPickLoading
+    ? 'Resolving clicked building · Extracting address and footprint'
+    : 'Powered by Google Maps, Street View, OSM geometry, manual tracing, and approximation fallback';
 
   const renderTopbar = (statusText) => (
     <div className="topbar">
@@ -321,7 +354,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {renderTopbar('Powered by Google Maps, Street View, OSM geometry, manual tracing, and approximation fallback')}
+      {renderTopbar(statusText)}
 
       <div className="main-layout">
         <aside className="sidebar">
@@ -357,7 +390,7 @@ export default function App() {
             >
               <span className="trace-any-kicker">Manual Mode</span>
               <span className="trace-any-title">Trace Any Building</span>
-              <span className="trace-any-meta">Click roof corners on the map</span>
+              <span className="trace-any-meta">Or click any building directly to auto-resolve it</span>
             </button>
           </div>
 
@@ -392,6 +425,7 @@ export default function App() {
             selectedBuilding={selected}
             seedBuildings={seedBuildings}
             onSelect={handleSelectSeeded}
+            onMapBuildingPick={handleMapBuildingPick}
             onCenterChange={handleMapCenterChange}
             editMode={editMode}
             manualFootprint={manualFootprint}

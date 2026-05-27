@@ -123,6 +123,12 @@ function createPartArtifact(part) {
 
   const shapePoints = footprint.map((point) => new THREE.Vector2(point.x, -point.z));
   const shape = new THREE.Shape(shapePoints);
+  const holeRings = Array.isArray(part?.holes) ? part.holes : [];
+  holeRings.forEach((hole) => {
+    if (hole.length < 3) return;
+    const holePoints = hole.map((point) => new THREE.Vector2(point.x, -point.z));
+    shape.holes.push(new THREE.Path(holePoints));
+  });
 
   const bodyGeometry = new THREE.ExtrudeGeometry(shape, {
     depth: wallHeight,

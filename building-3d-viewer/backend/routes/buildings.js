@@ -191,7 +191,36 @@ function polygonPerimeter(points) {
   return perimeter;
 }
 
-function computePolygonMetrics(projected) {
+function polygonBounds(points) {
+  if (!Array.isArray(points) || !points.length) {
+    return {
+      minX: 0,
+      maxX: 0,
+      minY: 0,
+      maxY: 0,
+      width: 0,
+      height: 0,
+    };
+  }
+
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function computePolygonMetrics(projected, holeProjected = []) {
   if (!Array.isArray(projected) || projected.length < 3) {
     return {
       area: 0,
@@ -200,13 +229,15 @@ function computePolygonMetrics(projected) {
       width: 0,
       height: 0,
       vertexCount: 0,
+      holeCount: 0,
     };
   }
 
-  const xs = projected.map(point => point.x);
-  const ys = projected.map(point => point.y);
-  const area = polygonArea(projected);
-  const perimeter = polygonPerimeter(projected);
+  const bounds = polygonBounds(projected);
+  const outerArea = polygonArea(projected);
+  const holeArea = holeProjected.reduce((sum, hole) => sum + polygonArea(hole), 0);
+  const area = Math.max(0, outerArea - holeArea);
+  const perimeter = polygonPerimeter(projected) + holeProjected.reduce((sum, hole) => sum + polygonPerimeter(hole), 0);
   const circularity = perimeter > 0
     ? (4 * Math.PI * area) / (perimeter * perimeter)
     : 0;
@@ -215,9 +246,10 @@ function computePolygonMetrics(projected) {
     area,
     perimeter,
     circularity,
-    width: Math.max(...xs) - Math.min(...xs),
-    height: Math.max(...ys) - Math.min(...ys),
+    width: bounds.width,
+    height: bounds.height,
     vertexCount: projected.length,
+    holeCount: holeProjected.length,
   };
 }
 
@@ -319,10 +351,19 @@ function closePolygon(points) {
   return points;
 }
 
-function extractWayPolygon(element) {
-  let geometry = Array.isArray(element.geometry) ? element.geometry : [];
+function normalizeRingGeometry(geometry = []) {
+  return closePolygon(
+    geometry
+      .map(point => ({ lat: point.lat, lng: point.lon }))
+      .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+  );
+}
 
-  if (geometry.length < 3 && Array.isArray(element.members)) {
+function extractWayFootprint(element) {
+  let outerGeometry = Array.isArray(element.geometry) ? element.geometry : [];
+  let innerGeometries = [];
+
+  if (Array.isArray(element.members)) {
     const outerMember = element.members.find(member =>
       member.role === 'outer'
       && Array.isArray(member.geometry)
@@ -330,32 +371,48 @@ function extractWayPolygon(element) {
     );
 
     if (outerMember) {
-      geometry = outerMember.geometry;
+      outerGeometry = outerMember.geometry;
     }
+
+    innerGeometries = element.members
+      .filter(member =>
+        member.role === 'inner'
+        && Array.isArray(member.geometry)
+        && member.geometry.length >= 3
+      )
+      .map(member => normalizeRingGeometry(member.geometry))
+      .filter(ring => ring.length >= 3);
   }
 
-  const points = geometry
-    .map(point => ({ lat: point.lat, lng: point.lon }))
-    .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+  const polygon = normalizeRingGeometry(outerGeometry);
 
-  return closePolygon(points);
+  return {
+    polygon,
+    holes: innerGeometries,
+  };
 }
 
 function chooseBestFootprint(elements, lat, lng) {
   const candidates = elements
     .map(element => {
-      const polygon = extractWayPolygon(element);
+      const { polygon, holes } = extractWayFootprint(element);
       if (polygon.length < 3) return null;
 
       const projected = polygon.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng));
+      const holeProjected = holes
+        .map(hole => hole.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng)))
+        .filter(hole => hole.length >= 3);
       const center = polygonCentroid(projected);
-      const containsSelection = pointInPolygon({ x: 0, y: 0 }, projected);
-      const areaMeters = polygonArea(projected);
+      const containsSelection = pointInPolygon({ x: 0, y: 0 }, projected)
+        && !holeProjected.some(hole => pointInPolygon({ x: 0, y: 0 }, hole));
+      const areaMeters = computePolygonMetrics(projected, holeProjected).area;
       const centroidDistance = Math.hypot(center.x, center.y);
 
       return {
         polygon,
+        holes,
         projected,
+        holeProjected,
         center,
         containsSelection,
         areaMeters,
@@ -397,18 +454,24 @@ function isPrimaryBuildingCandidate(tags = {}) {
 }
 
 function buildElementCandidate(element, lat, lng) {
-  const polygon = extractWayPolygon(element);
+  const { polygon, holes } = extractWayFootprint(element);
   if (polygon.length < 3) return null;
 
   const projected = polygon.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng));
+  const holeProjected = holes
+    .map(hole => hole.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng)))
+    .filter(hole => hole.length >= 3);
   const center = polygonCentroid(projected);
-  const containsSelection = pointInPolygon({ x: 0, y: 0 }, projected);
-  const areaMeters = polygonArea(projected);
+  const containsSelection = pointInPolygon({ x: 0, y: 0 }, projected)
+    && !holeProjected.some(hole => pointInPolygon({ x: 0, y: 0 }, hole));
+  const areaMeters = computePolygonMetrics(projected, holeProjected).area;
   const centroidDistance = Math.hypot(center.x, center.y);
 
   return {
     polygon,
+    holes,
     projected,
+    holeProjected,
     center,
     containsSelection,
     areaMeters,
@@ -452,14 +515,29 @@ function buildCandidateFromPolygon(polygon, lat, lng, extra = {}) {
   if (cleaned.length < 3) return null;
 
   const projected = cleaned.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng));
+  const holes = Array.isArray(extra.holes)
+    ? extra.holes
+      .map(hole => closePolygon(
+        hole.filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      ))
+      .filter(hole => hole.length >= 3)
+    : [];
+  const holeProjected = holes
+    .map(hole => hole.map(point => projectToLocalMeters(point.lat, point.lng, lat, lng)))
+    .filter(hole => hole.length >= 3);
   const center = polygonCentroid(projected);
+  const containsSelection = pointInPolygon({ x: 0, y: 0 }, projected)
+    && !holeProjected.some(hole => pointInPolygon({ x: 0, y: 0 }, hole));
+  const metrics = computePolygonMetrics(projected, holeProjected);
 
   return {
     polygon: cleaned,
+    holes,
     projected,
+    holeProjected,
     center,
-    containsSelection: pointInPolygon({ x: 0, y: 0 }, projected),
-    areaMeters: polygonArea(projected),
+    containsSelection,
+    areaMeters: metrics.area,
     centroidDistance: Math.hypot(center.x, center.y),
     ...extra,
   };
@@ -844,18 +922,38 @@ out geom tags center;`;
   throw lastError || new Error('No mapped building footprint was found near this location.');
 }
 
-function extractGeoJsonOuterRing(geojson) {
+function geoJsonRingToPolygon(ring = []) {
+  return closePolygon(
+    ring
+      .map(([candidateLng, candidateLat]) => ({
+        lat: candidateLat,
+        lng: candidateLng,
+      }))
+      .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+  );
+}
+
+function extractGeoJsonFootprint(geojson) {
   if (!geojson || !geojson.type || !Array.isArray(geojson.coordinates)) return null;
 
+  let polygonRings = null;
   if (geojson.type === 'Polygon') {
-    return geojson.coordinates[0] || null;
+    polygonRings = geojson.coordinates;
+  } else if (geojson.type === 'MultiPolygon') {
+    polygonRings = geojson.coordinates[0] || null;
   }
 
-  if (geojson.type === 'MultiPolygon') {
-    return geojson.coordinates[0]?.[0] || null;
-  }
+  if (!Array.isArray(polygonRings) || !polygonRings.length) return null;
 
-  return null;
+  const polygon = geoJsonRingToPolygon(polygonRings[0] || []);
+  const holes = polygonRings
+    .slice(1)
+    .map(geoJsonRingToPolygon)
+    .filter(ring => ring.length >= 3);
+
+  if (polygon.length < 3) return null;
+
+  return { polygon, holes };
 }
 
 async function fetchNominatimFootprint(building, lat, lng) {
@@ -883,15 +981,11 @@ async function fetchNominatimFootprint(building, lat, lng) {
 
   const results = Array.isArray(response.data) ? response.data : [];
   const candidates = results.map(result => {
-    const outerRing = extractGeoJsonOuterRing(result.geojson);
-    if (!outerRing) return null;
+    const footprint = extractGeoJsonFootprint(result.geojson);
+    if (!footprint) return null;
 
-    const polygon = outerRing.map(([candidateLng, candidateLat]) => ({
-      lat: candidateLat,
-      lng: candidateLng,
-    }));
-
-    return buildCandidateFromPolygon(polygon, lat, lng, {
+    return buildCandidateFromPolygon(footprint.polygon, lat, lng, {
+      holes: footprint.holes,
       tags: {
         building: result.type || result.class || 'building',
       },
@@ -925,17 +1019,13 @@ async function fetchNominatimReverseFootprint(lat, lng) {
   });
 
   const result = response.data || {};
-  const outerRing = extractGeoJsonOuterRing(result.geojson);
-  if (!outerRing) {
+  const footprint = extractGeoJsonFootprint(result.geojson);
+  if (!footprint) {
     throw new Error('No Nominatim reverse polygon matched this location.');
   }
 
-  const polygon = outerRing.map(([candidateLng, candidateLat]) => ({
-    lat: candidateLat,
-    lng: candidateLng,
-  }));
-
-  const match = buildCandidateFromPolygon(polygon, lat, lng, {
+  const match = buildCandidateFromPolygon(footprint.polygon, lat, lng, {
+    holes: footprint.holes,
     tags: {
       building: result.type || result.category || 'building',
     },
@@ -1171,6 +1261,16 @@ function parsePositiveNumber(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function parseYear(value) {
+  if (value === undefined || value === null) return null;
+
+  const match = String(value).match(/\b(1[6-9]\d{2}|20\d{2}|2100)\b/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  return Number.isFinite(year) ? year : null;
+}
+
 function estimateBuildingLevels(tags, building) {
   return parsePositiveNumber(tags['building:levels'])
     || parsePositiveNumber(tags.levels)
@@ -1293,6 +1393,12 @@ function buildPartModel(candidate, building, buildingContext, origin, index = 0)
     x: Number((point.x - origin.x).toFixed(3)),
     z: Number((point.y - origin.y).toFixed(3)),
   }));
+  const centeredHoles = (candidate.holeProjected || []).map(hole => (
+    hole.map(point => ({
+      x: Number((point.x - origin.x).toFixed(3)),
+      z: Number((point.y - origin.y).toFixed(3)),
+    }))
+  ));
 
   const xs = centered.map(point => point.x);
   const zs = centered.map(point => point.z);
@@ -1308,6 +1414,7 @@ function buildPartModel(candidate, building, buildingContext, origin, index = 0)
     id: `${building._id || building.name || 'building'}-part-${index}`,
     kind: determinePartKind(tags, buildingContext, index),
     footprint: centered,
+    holes: centeredHoles,
     metrics: {
       footprintAreaMeters: Number(candidate.areaMeters.toFixed(1)),
       widthMeters: Number(widthMeters.toFixed(1)),
@@ -1585,6 +1692,131 @@ async function build3DModel(building) {
   return build3DModelData({ ...building, lat, lng }, footprint);
 }
 
+async function reverseGeocodeLocation(lat, lng) {
+  const response = await axios.get('https://nominatim.openstreetmap.org/reverse', {
+    params: {
+      lat,
+      lon: lng,
+      format: 'jsonv2',
+      addressdetails: 1,
+      zoom: 18,
+    },
+    headers: {
+      Accept: 'application/json,text/plain;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en',
+      'User-Agent': 'Archisight/1.0 (local development)',
+    },
+    timeout: 20000,
+  });
+
+  return response.data || {};
+}
+
+function inferBuildingName(tags = {}, reverseResult = {}) {
+  const directName = [
+    tags.name,
+    tags['name:en'],
+    tags.operator,
+    reverseResult.name,
+    reverseResult.namedetails?.name,
+    reverseResult.address?.building,
+    reverseResult.address?.amenity,
+    reverseResult.address?.attraction,
+    reverseResult.address?.office,
+  ]
+    .map((value) => String(value || '').trim())
+    .find(Boolean);
+
+  if (directName) return directName;
+
+  const road = reverseResult.address?.road || reverseResult.address?.pedestrian || reverseResult.address?.footway;
+  const houseNumber = reverseResult.address?.house_number;
+  if (road) {
+    return houseNumber ? `${road} ${houseNumber}` : road;
+  }
+
+  return 'Selected Building';
+}
+
+function inferBuildingAddress(reverseResult = {}, fallbackName = 'Selected Building') {
+  const displayName = String(reverseResult.display_name || '').trim();
+  if (displayName) return displayName;
+
+  const road = reverseResult.address?.road || reverseResult.address?.pedestrian || reverseResult.address?.footway;
+  const houseNumber = reverseResult.address?.house_number;
+  const city = reverseResult.address?.city || reverseResult.address?.town || reverseResult.address?.village;
+  const postcode = reverseResult.address?.postcode;
+
+  const firstLine = [road, houseNumber].filter(Boolean).join(' ').trim();
+  const secondLine = [postcode, city].filter(Boolean).join(' ').trim();
+  const joined = [firstLine, secondLine].filter(Boolean).join(', ').trim();
+
+  return joined || fallbackName;
+}
+
+function collectBuildingAmenities(tags = {}) {
+  return [
+    tags.building,
+    tags.amenity,
+    tags.tourism,
+    tags.shop,
+    tags.office,
+    tags.historic,
+    tags['roof:shape'],
+  ].filter(Boolean);
+}
+
+function buildResolvedBuildingFromSelection(lat, lng, candidate, reverseResult) {
+  const tags = candidate?.tags || {};
+  const centroid = candidate
+    ? localMetersToLatLng(candidate.center.x, candidate.center.y, lat, lng)
+    : { lat, lng };
+  const name = inferBuildingName(tags, reverseResult);
+  const address = inferBuildingAddress(reverseResult, name);
+  const floors = Math.max(1, Math.round(estimateBuildingLevels(tags, {})));
+  const areaMeters = candidate?.areaMeters ? Number(candidate.areaMeters.toFixed(1)) : null;
+  const areaSqFt = areaMeters ? Number((areaMeters * 10.764).toFixed(1)) : null;
+  const yearBuilt = parseYear(tags.start_date)
+    || parseYear(tags.construction_date)
+    || parseYear(tags.year_built)
+    || parseYear(tags['building:date']);
+  const roofShape = tags['roof:shape'] || null;
+  const sourceLabel = candidate?.sourceProvider || 'Reverse geocoding';
+
+  return {
+    _id: `resolved-${Date.now()}`,
+    name,
+    address,
+    lat: centroid.lat,
+    lng: centroid.lng,
+    floors,
+    area: areaSqFt,
+    yearBuilt,
+    amenities: collectBuildingAmenities(tags),
+    description: `Resolved from a map click using ${sourceLabel}.`,
+    roofShape,
+    isOsm: true,
+    clickResolved: true,
+  };
+}
+
+async function resolveClickedBuilding(lat, lng) {
+  let candidate = null;
+
+  try {
+    candidate = await fetchOverpassFootprint(lat, lng);
+  } catch (overpassError) {
+    try {
+      candidate = await fetchNominatimReverseFootprint(lat, lng);
+    } catch (reverseError) {
+      candidate = null;
+    }
+  }
+
+  const reverseResult = await reverseGeocodeLocation(lat, lng).catch(() => ({}));
+  return buildResolvedBuildingFromSelection(lat, lng, candidate, reverseResult);
+}
+
 // ── SOLAR API endpoint ────────────────────────────────────────────────────────
 router.get('/solar-stats', async (req, res) => {
   try {
@@ -1641,6 +1873,24 @@ router.get('/solar-stats', async (req, res) => {
 
 // ── DIRECT endpoints (custom/OSM buildings — body contains building data) ──────
 // IMPORTANT: These MUST be declared before /:id routes
+
+router.post('/resolve-location', async (req, res) => {
+  try {
+    const { lat, lng } = req.body || {};
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
+      return res.status(400).json({ success: false, message: 'Latitude and longitude are required.' });
+    }
+
+    const building = await resolveClickedBuilding(parsedLat, parsedLng);
+    res.json({ success: true, data: building });
+  } catch (err) {
+    console.error('Resolve location error:', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to resolve the clicked building.' });
+  }
+});
 
 router.post('/direct/generate-3d', async (req, res) => {
   try {
