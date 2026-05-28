@@ -15,17 +15,23 @@ function buildRectangleFromCorners(first, second) {
   ];
 }
 
+function pathSignature(points = []) {
+  return points
+    .map((point) => `${Number(point.lat).toFixed(6)},${Number(point.lng).toFixed(6)}`)
+    .join('|');
+}
+
 export default function MapComponent({
   center,
   selectedBuilding,
-  seedBuildings,
-  onSelect,
   onMapBuildingPick,
   onCenterChange,
   editMode,
   manualFootprint,
+  manualHoles,
   manualTraceVersion,
   onManualFootprintChange,
+  onManualHolesChange,
   rectangleAnchor,
   onRectangleAnchorChange,
 }) {
@@ -33,8 +39,17 @@ export default function MapComponent({
 
   useEffect(() => {
     if (map && center) {
-      map.panTo(center);
-      map.setZoom(18);
+      const currentCenter = map.getCenter();
+      if (!currentCenter) {
+        map.panTo(center);
+        return;
+      }
+
+      const latDelta = Math.abs(currentCenter.lat() - center.lat);
+      const lngDelta = Math.abs(currentCenter.lng() - center.lng);
+      if (latDelta > 0.0005 || lngDelta > 0.0005) {
+        map.panTo(center);
+      }
     }
   }, [center, map]);
 
@@ -42,14 +57,40 @@ export default function MapComponent({
     () => manualFootprint.map((point) => ({ lat: point.lat, lng: point.lng })),
     [manualFootprint]
   );
+  const manualHolePaths = useMemo(
+    () => (manualHoles || []).map((hole) => hole.map((point) => ({ lat: point.lat, lng: point.lng }))),
+    [manualHoles]
+  );
+  const manualPolygonPaths = useMemo(
+    () => [manualPath, ...manualHolePaths.filter((hole) => hole.length >= 3)],
+    [manualHolePaths, manualPath]
+  );
+  const manualPathKey = useMemo(
+    () => `${manualTraceVersion}-${pathSignature(manualPath)}`,
+    [manualPath, manualTraceVersion]
+  );
+  const manualPolygonKey = useMemo(
+    () => `${manualTraceVersion}-${manualPolygonPaths.map(pathSignature).join('::')}`,
+    [manualPolygonPaths, manualTraceVersion]
+  );
 
   const handleMapClick = (event) => {
     const lat = event.latLng?.lat();
     const lng = event.latLng?.lng();
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
-    if (editMode === 'trace') {
+    if (editMode === 'trace-outer') {
       onManualFootprintChange([...manualFootprint, { lat, lng }]);
+      return;
+    }
+
+    if (editMode === 'trace-hole') {
+      const nextHoles = Array.isArray(manualHoles) ? manualHoles.map((hole) => [...hole]) : [];
+      if (!nextHoles.length) {
+        nextHoles.push([]);
+      }
+      nextHoles[nextHoles.length - 1].push({ lat, lng });
+      onManualHolesChange(nextHoles);
       return;
     }
 
@@ -64,6 +105,22 @@ export default function MapComponent({
     }
 
     onMapBuildingPick?.({ lat, lng });
+  };
+
+  const updateOuterPoint = (index, point) => {
+    onManualFootprintChange(
+      manualFootprint.map((current, currentIndex) => (currentIndex === index ? point : current))
+    );
+  };
+
+  const updateHolePoint = (holeIndex, pointIndex, point) => {
+    onManualHolesChange(
+      manualHoles.map((hole, currentHoleIndex) => (
+        currentHoleIndex === holeIndex
+          ? hole.map((currentPoint, currentPointIndex) => (currentPointIndex === pointIndex ? point : currentPoint))
+          : hole
+      ))
+    );
   };
 
   return (
@@ -90,28 +147,6 @@ export default function MapComponent({
           draggableCursor: editMode ? 'crosshair' : undefined,
         }}
       >
-        {seedBuildings.map((building) => {
-          const lat = building.coordinates?.coordinates?.[1] || 0;
-          const lng = building.coordinates?.coordinates?.[0] || 0;
-          const isSelected = selectedBuilding?._id === building._id;
-
-          return (
-            <Marker
-              key={building._id}
-              position={{ lat, lng }}
-              onClick={() => onSelect(building)}
-              icon={{
-                path: window.google.maps.SymbolPath.CIRCLE,
-                scale: isSelected ? 8 : 6,
-                fillColor: isSelected ? '#818cf8' : '#4fc3f7',
-                fillOpacity: 1,
-                strokeWeight: 2,
-                strokeColor: '#fff',
-              }}
-            />
-          );
-        })}
-
         {selectedBuilding && (selectedBuilding._id.startsWith('gmaps') || selectedBuilding.isCustomTrace) && (
           <Marker
             position={{ lat: selectedBuilding.lat, lng: selectedBuilding.lng }}
@@ -128,9 +163,10 @@ export default function MapComponent({
 
         {manualPath.length >= 2 && (
           <Polyline
-            key={`manual-line-${manualTraceVersion}-${manualPath.length}`}
+            key={`manual-line-${manualPathKey}`}
             path={manualPath}
             options={{
+              clickable: false,
               strokeColor: '#38bdf8',
               strokeOpacity: 1,
               strokeWeight: 3,
@@ -140,9 +176,10 @@ export default function MapComponent({
 
         {manualPath.length >= 3 && (
           <Polygon
-            key={`manual-polygon-${manualTraceVersion}-${manualPath.length}`}
-            path={manualPath}
+            key={`manual-polygon-${manualPolygonKey}`}
+            paths={manualPolygonPaths}
             options={{
+              clickable: false,
               fillColor: '#38bdf8',
               fillOpacity: 0.18,
               strokeColor: '#7dd3fc',
@@ -156,6 +193,13 @@ export default function MapComponent({
           <Marker
             key={`manual-${manualTraceVersion}-${index}`}
             position={point}
+            draggable
+            onDragEnd={(event) => {
+              const lat = event.latLng?.lat();
+              const lng = event.latLng?.lng();
+              if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+              updateOuterPoint(index, { lat, lng });
+            }}
             icon={{
               path: window.google.maps.SymbolPath.CIRCLE,
               scale: 5,
@@ -165,6 +209,44 @@ export default function MapComponent({
               strokeColor: '#fff',
             }}
           />
+        ))}
+
+        {manualHolePaths.map((hole, holeIndex) => (
+          <React.Fragment key={`manual-hole-${manualTraceVersion}-${holeIndex}-${pathSignature(hole)}`}>
+            {hole.length >= 2 && (
+              <Polyline
+                key={`manual-hole-line-${manualTraceVersion}-${holeIndex}-${pathSignature(hole)}`}
+                path={hole}
+                options={{
+                  clickable: false,
+                  strokeColor: '#a78bfa',
+                  strokeOpacity: 0.95,
+                  strokeWeight: 3,
+                }}
+              />
+            )}
+            {hole.map((point, pointIndex) => (
+              <Marker
+                key={`manual-hole-${manualTraceVersion}-${holeIndex}-${pointIndex}`}
+                position={point}
+                draggable
+                onDragEnd={(event) => {
+                  const lat = event.latLng?.lat();
+                  const lng = event.latLng?.lng();
+                  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+                  updateHolePoint(holeIndex, pointIndex, { lat, lng });
+                }}
+                icon={{
+                  path: window.google.maps.SymbolPath.CIRCLE,
+                  scale: 5,
+                  fillColor: '#a78bfa',
+                  fillOpacity: 1,
+                  strokeWeight: 1.5,
+                  strokeColor: '#fff',
+                }}
+              />
+            ))}
+          </React.Fragment>
         ))}
 
         {rectangleAnchor && (

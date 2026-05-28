@@ -21,8 +21,10 @@ const BuildingPanel = ({
   onClose,
   editMode,
   manualPointCount,
+  holeCount = 0,
   hasTraceDraft,
   onStartTrace,
+  onStartHoleTrace,
   onStartRectangle,
   onStopEditing,
   onUndoManualPoint,
@@ -71,14 +73,17 @@ const BuildingPanel = ({
         <div className="manual-tools-card">
           <div className="manual-tools-head">
             <strong>Fallback Geometry Tools</strong>
-            <span>{manualPointCount} point{manualPointCount === 1 ? '' : 's'}</span>
+            <span>{manualPointCount} outer pts · {holeCount} hole{holeCount === 1 ? '' : 's'}</span>
           </div>
           <p>
-            If OSM polygons are weak or missing, trace the roof directly on the satellite map or use rectangle assist to mark opposite corners.
+            If OSM polygons are weak or missing, trace the outer roof shell, then add inner courtyards or voids directly on the satellite map.
           </p>
           <div className="manual-tools-actions">
-            <button type="button" className={`secondary-btn ${editMode === 'trace' ? 'active' : ''}`} onClick={onStartTrace}>
-              Trace Footprint
+            <button type="button" className={`secondary-btn ${editMode === 'trace-outer' ? 'active' : ''}`} onClick={onStartTrace}>
+              Trace Outer Shell
+            </button>
+            <button type="button" className={`secondary-btn ${editMode === 'trace-hole' ? 'active' : ''}`} onClick={onStartHoleTrace} disabled={manualPointCount < 3}>
+              Trace Inner Void
             </button>
             <button type="button" className={`secondary-btn ${editMode === 'rectangle' ? 'active' : ''}`} onClick={onStartRectangle}>
               Rectangle Assist
@@ -95,14 +100,17 @@ const BuildingPanel = ({
               Clear All
             </button>
           </div>
-          {editMode === 'trace' && (
-            <div className="manual-tools-note">Trace mode: click around the roof outline point by point.</div>
+          {editMode === 'trace-outer' && (
+            <div className="manual-tools-note">Outer trace: click around the outside edge point by point, then drag any orange handle to refine it.</div>
+          )}
+          {editMode === 'trace-hole' && (
+            <div className="manual-tools-note">Inner void trace: click around the courtyard or cut-out area. Purple handles mark hole vertices and can also be dragged.</div>
           )}
           {editMode === 'rectangle' && (
             <div className="manual-tools-note">Rectangle assist: click one corner, then the opposite corner on the satellite image.</div>
           )}
           {hasManualFootprint && (
-            <div className="manual-tools-note">Manual polygon ready. It will override automatic lookup for the next 3D model build.</div>
+            <div className="manual-tools-note">Manual geometry ready. It will override automatic lookup for the next 3D model build.</div>
           )}
         </div>
 

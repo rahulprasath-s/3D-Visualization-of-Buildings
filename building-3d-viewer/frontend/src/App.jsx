@@ -55,7 +55,6 @@ export default function App() {
     libraries: LIBRARIES,
   });
 
-  const [seedBuildings, setSeedBuildings] = useState([]);
   const [selected, setSelected] = useState(null);
   const [solarStats, setSolarStats] = useState(null);
   const [solarLoading, setSolarLoading] = useState(false);
@@ -64,6 +63,7 @@ export default function App() {
   const [mapCenter, setMapCenter] = useState({ lat: 49.4521, lng: 11.0767 });
   const [editMode, setEditMode] = useState(null);
   const [manualFootprint, setManualFootprint] = useState([]);
+  const [manualHoles, setManualHoles] = useState([]);
   const [manualTraceVersion, setManualTraceVersion] = useState(0);
   const [rectangleAnchor, setRectangleAnchor] = useState(null);
   const [backStack, setBackStack] = useState([]);
@@ -79,6 +79,7 @@ export default function App() {
     mapCenter,
     editMode,
     manualFootprint,
+    manualHoles,
     rectangleAnchor,
   });
 
@@ -89,6 +90,7 @@ export default function App() {
     setMapCenter(snapshot.mapCenter);
     setEditMode(snapshot.editMode);
     setManualFootprint(snapshot.manualFootprint || []);
+    setManualHoles(snapshot.manualHoles || []);
     setRectangleAnchor(snapshot.rectangleAnchor || null);
   };
 
@@ -122,12 +124,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    api.get('/api/buildings')
-      .then((res) => {
-        setSeedBuildings(res.data.data);
-        setAppState('map');
-      })
-      .catch(() => setAppState('map'));
+    setAppState('map');
   }, []);
 
   useEffect(() => {
@@ -142,13 +139,14 @@ export default function App() {
     if (suppressHistoryRef.current) {
       suppressHistoryRef.current = false;
     }
-  }, [appState, selected, mapCenter, editMode, manualFootprint, rectangleAnchor]);
+  }, [appState, selected, mapCenter, editMode, manualFootprint, manualHoles, rectangleAnchor]);
 
   useEffect(() => {
     if (!selected) {
       setSolarStats(null);
       setEditMode(null);
       setManualFootprint([]);
+      setManualHoles([]);
       setRectangleAnchor(null);
       return;
     }
@@ -214,23 +212,9 @@ export default function App() {
       setEditMode(null);
       setRectangleAnchor(null);
       setManualFootprint([]);
+      setManualHoles([]);
       setMapCenter({ lat, lng });
       setSelected(building);
-      setAppState('map');
-    });
-  };
-
-  const handleSelectSeeded = (building) => {
-    const lat = building.coordinates?.coordinates?.[1] || 49.4521;
-    const lng = building.coordinates?.coordinates?.[0] || 11.0767;
-    const next = { ...building, lat, lng, isOsm: building.isOsm || false };
-
-    transitionTo(() => {
-      setEditMode(null);
-      setRectangleAnchor(null);
-      setManualFootprint([]);
-      setMapCenter({ lat, lng });
-      setSelected(next);
       setAppState('map');
     });
   };
@@ -252,6 +236,7 @@ export default function App() {
         setEditMode(null);
         setRectangleAnchor(null);
         setManualFootprint([]);
+        setManualHoles([]);
         setMapCenter({ lat: building.lat, lng: building.lng });
         setSelected(building);
         setAppState('plan');
@@ -275,9 +260,10 @@ export default function App() {
     transitionTo(() => {
       setSelected(createCustomTraceBuilding(mapCenter));
       setManualFootprint([]);
+      setManualHoles([]);
       setManualTraceVersion((version) => version + 1);
       setRectangleAnchor(null);
-      setEditMode('trace');
+      setEditMode('trace-outer');
       setAppState('map');
     });
   };
@@ -289,6 +275,7 @@ export default function App() {
         ...(manualCentroid ? { lat: manualCentroid.lat, lng: manualCentroid.lng } : {}),
         solarStats,
         manualFootprint: manualFootprint.length >= 3 ? manualFootprint : undefined,
+        manualHoles: manualHoles.filter((hole) => hole.length >= 3),
       }
     : null;
 
@@ -356,7 +343,7 @@ export default function App() {
     <div className="app">
       {renderTopbar(statusText)}
 
-      <div className="main-layout">
+        <div className="main-layout">
         <aside className="sidebar">
           <div className="sidebar-header">
             <h2>Search any building</h2>
@@ -393,44 +380,20 @@ export default function App() {
               <span className="trace-any-meta">Or click any building directly to auto-resolve it</span>
             </button>
           </div>
-
-          <div className="sidebar-section-label">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-            Featured Buildings
-          </div>
-          <div className="building-list">
-            {seedBuildings.map((building) => (
-              <div
-                key={building._id}
-                className={`building-card ${selected?._id === building._id ? 'active' : ''}`}
-                onClick={() => handleSelectSeeded(building)}
-              >
-                <div className="card-name">{building.name}</div>
-                <div className="card-address">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-                  </svg>
-                  {building.address}
-                </div>
-              </div>
-            ))}
-          </div>
         </aside>
 
         <div className="content-area" style={{ display: 'flex', flexDirection: 'column' }}>
           <MapComponent
             center={mapCenter}
             selectedBuilding={selected}
-            seedBuildings={seedBuildings}
-            onSelect={handleSelectSeeded}
             onMapBuildingPick={handleMapBuildingPick}
             onCenterChange={handleMapCenterChange}
             editMode={editMode}
             manualFootprint={manualFootprint}
+            manualHoles={manualHoles}
             manualTraceVersion={manualTraceVersion}
             onManualFootprintChange={setManualFootprint}
+            onManualHolesChange={setManualHoles}
             rectangleAnchor={rectangleAnchor}
             onRectangleAnchorChange={setRectangleAnchor}
           />
@@ -446,14 +409,25 @@ export default function App() {
                   setSelected(null);
                   setEditMode(null);
                   setManualFootprint([]);
+                  setManualHoles([]);
                   setRectangleAnchor(null);
                 });
               }}
               editMode={editMode}
               manualPointCount={manualFootprint.length}
-              hasTraceDraft={manualFootprint.length > 0 || Boolean(rectangleAnchor)}
+              holeCount={manualHoles.filter((hole) => hole.length >= 3).length}
+              hasTraceDraft={manualFootprint.length > 0 || manualHoles.some((hole) => hole.length > 0) || Boolean(rectangleAnchor)}
               onStartTrace={() => transitionTo(() => {
-                setEditMode('trace');
+                setEditMode('trace-outer');
+                setRectangleAnchor(null);
+              })}
+              onStartHoleTrace={() => transitionTo(() => {
+                setManualHoles((current) => (
+                  current.length && current[current.length - 1].length === 0
+                    ? current
+                    : [...current, []]
+                ));
+                setEditMode('trace-hole');
                 setRectangleAnchor(null);
               })}
               onStartRectangle={() => transitionTo(() => {
@@ -465,10 +439,25 @@ export default function App() {
                 setRectangleAnchor(null);
               })}
               onUndoManualPoint={() => {
+                if (editMode === 'trace-hole') {
+                  setManualHoles((current) => {
+                    if (!current.length) return current;
+                    const next = current.map((hole) => [...hole]);
+                    const lastIndex = next.length - 1;
+                    next[lastIndex] = next[lastIndex].slice(0, -1);
+                    if (next[lastIndex].length === 0) {
+                      next.pop();
+                    }
+                    return next;
+                  });
+                  return;
+                }
+
                 setManualFootprint((current) => current.slice(0, -1));
               }}
               onClearManual={() => {
                 setManualFootprint([]);
+                setManualHoles([]);
                 setManualTraceVersion((version) => version + 1);
                 setRectangleAnchor(null);
                 setEditMode(null);

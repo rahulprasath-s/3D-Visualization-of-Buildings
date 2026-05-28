@@ -1041,7 +1041,9 @@ async function fetchNominatimReverseFootprint(lat, lng) {
 
 function manualFootprintToCandidate(building, lat, lng) {
   const footprint = Array.isArray(building.manualFootprint) ? building.manualFootprint : [];
+  const holes = Array.isArray(building.manualHoles) ? building.manualHoles : [];
   const candidate = buildCandidateFromPolygon(footprint, lat, lng, {
+    holes,
     tags: {
       building: 'manual',
       'building:levels': building.floors || null,

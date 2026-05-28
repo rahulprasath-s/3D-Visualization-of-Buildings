@@ -158,12 +158,23 @@ function createPartArtifact(part) {
   const ridgeAxis = part.roof.ridgeAxis;
   const roofShape = part.roof.shape;
 
-  const shapePoints = footprint.map((point) => new THREE.Vector2(point.x, -point.z));
+  const normalizeRing = (points, clockwise) => {
+    const next = points.map((point) => point.clone());
+    return THREE.ShapeUtils.isClockWise(next) === clockwise ? next : next.reverse();
+  };
+
+  const shapePoints = normalizeRing(
+    footprint.map((point) => new THREE.Vector2(point.x, -point.z)),
+    false
+  );
   const shape = new THREE.Shape(shapePoints);
   const holeRings = Array.isArray(part?.holes) ? part.holes : [];
   holeRings.forEach((hole) => {
     if (hole.length < 3) return;
-    const holePoints = hole.map((point) => new THREE.Vector2(point.x, -point.z));
+    const holePoints = normalizeRing(
+      hole.map((point) => new THREE.Vector2(point.x, -point.z)),
+      true
+    );
     shape.holes.push(new THREE.Path(holePoints));
   });
 
