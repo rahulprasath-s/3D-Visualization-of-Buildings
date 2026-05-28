@@ -343,7 +343,7 @@ export default function App() {
   if (appState === 'plan' && selectedForViewer) {
     return (
       <div className="app">
-        {renderTopbar('Building geometry · Rendering 3D massing')}
+        {renderTopbar('3D massing pipeline · Building from footprint, height, and roof rules')}
         <PlanViewer
           building={selectedForViewer}
           onBack={() => transitionTo(() => setAppState('map'))}

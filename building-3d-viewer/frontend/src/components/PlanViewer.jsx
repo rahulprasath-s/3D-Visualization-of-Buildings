@@ -16,6 +16,43 @@ const ROOF_OPTIONS = [
   { value: 'cone', label: 'Cone / Spire' },
 ];
 
+function describeGenerationMethod(model) {
+  const provider = model?.source?.provider || 'map geometry';
+  const detection = model?.source?.detection;
+
+  if (provider === 'Manual footprint') {
+    return {
+      short: 'Rules-based from your traced footprint',
+      detail: `Built from your manual outline, then extruded with height and roof heuristics. Source footprint: ${provider}.`,
+    };
+  }
+
+  if (detection) {
+    return {
+      short: 'Rules-based from satellite-detected footprint',
+      detail: `Built from a detected roof contour, then converted into 3D massing with height and roof rules. Source footprint: ${provider}.`,
+    };
+  }
+
+  if (provider === 'Approximation fallback') {
+    return {
+      short: 'Rules-based approximation fallback',
+      detail: 'Built from an estimated footprint, then extruded with procedural height and roof rules because a stronger footprint source was unavailable.',
+    };
+  }
+
+  return {
+    short: 'Rules-based from map building geometry',
+    detail: `Built from footprint data and tagged metadata, then converted into 3D massing with procedural height and roof rules. Source footprint: ${provider}.`,
+  };
+}
+
+function formatElapsed(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
 function roofProfile(shape, ridgeAxis, roofShape, roofHeight, bounds) {
   if (!roofHeight || roofShape === 'flat') {
     return shape.clone();
@@ -281,6 +318,7 @@ const Viewer = ({ building, onBack }) => {
   const [errorMsg, setErrorMsg] = useState('');
   const [exporting, setExporting] = useState(false);
   const [roofChoice, setRoofChoice] = useState('auto');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -290,6 +328,7 @@ const Viewer = ({ building, onBack }) => {
       setModel(null);
       setErrorMsg('');
       setRoofChoice('auto');
+      setElapsedSeconds(0);
 
       try {
         const endpoint = building.isOsm
@@ -314,9 +353,20 @@ const Viewer = ({ building, onBack }) => {
     };
   }, [building]);
 
+  useEffect(() => {
+    if (state !== 'loading') return undefined;
+
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [state]);
+
   const displayModel = useMemo(() => applyRoofOverride(model, roofChoice), [model, roofChoice]);
   const artifacts = useMemo(() => (displayModel ? createBuildingArtifacts(displayModel) : null), [displayModel]);
   const viewerSettings = useMemo(() => createViewerSettings(artifacts), [artifacts]);
+  const generationMethod = useMemo(() => describeGenerationMethod(displayModel), [displayModel]);
 
   const handleExportGlb = async () => {
     if (!artifacts || !displayModel) return;
@@ -402,7 +452,7 @@ const Viewer = ({ building, onBack }) => {
             {exporting ? 'Exporting…' : 'Export GLB'}
           </button>
           <span className="model-badge">
-            {model?.source?.detection ? 'Satellite-detected footprint' : (model?.source?.provider || 'OSM + Height Estimate')}
+            {generationMethod.short}
           </span>
         </div>
       </div>
@@ -411,7 +461,8 @@ const Viewer = ({ building, onBack }) => {
         {state === 'loading' && (
           <div className="plan-loading">
             <div className="spinner-ring"></div>
-            <p>Fetching real footprint, estimated height, and roof profile…</p>
+            <p>Generating 3D massing in the backend…</p>
+            <span className="model-timer">Elapsed {formatElapsed(elapsedSeconds)}</span>
             <span className="model-label">Automatic lookup will fall back to your traced footprint when available</span>
           </div>
         )}
@@ -493,6 +544,9 @@ const Viewer = ({ building, onBack }) => {
               </div>
               <p>
                 Width {displayModel.metrics.widthMeters} m · Depth {displayModel.metrics.depthMeters} m · Levels {displayModel.metrics.levels}
+              </p>
+              <p>
+                {generationMethod.detail}
               </p>
               <p>
                 Type {displayModel.building.type} · Street View refinement {displayModel.source?.refinementHints?.streetViewCandidate ? 'available' : 'unavailable'}
